@@ -950,27 +950,45 @@ export const useCallControl = (props: useCallControlProps) => {
         let destination = store.lastConsultDestination;
 
         if (!destination?.to) {
-          // After page refresh, lastConsultDestination is lost (in-memory only).
-          // Recover the transfer target from the consult media's participants.
+          // lastConsultDestination is in-memory only; after refresh recover from interaction.
           const myAgentId = store.cc.agentConfig?.agentId;
           const {interaction} = currentTask.data;
-          const consultMediaId = findMediaResourceId(currentTask, 'consult');
-          const consultMedia = consultMediaId ? interaction?.media?.[consultMediaId] : null;
-
-          let consultedAgentId: string | null = null;
-          if (consultMedia?.participants) {
-            consultedAgentId = consultMedia.participants.find((pid: string) => {
-              const p = interaction?.participants?.[pid];
-              return p && p.id !== myAgentId && p.pType === 'Agent';
-            }) ?? null;
-          }
-
-          if (consultedAgentId) {
-            destination = {to: consultedAgentId, destinationType: 'agent' as DestinationType};
-            logger.info(`Recovered consult destination from interaction data: ${consultedAgentId}`, {
-              module: 'useCallControl',
-              method: 'consultTransfer',
-            });
+          const media = interaction?.media;
+          const hinted = (currentTask.data as {consultMediaResourceId?: string | null}).consultMediaResourceId;
+          const consultId =
+            hinted && media?.[hinted]?.mType === 'consult'
+              ? hinted
+              : ((findLatestConsultMedia(interaction) as {mediaResourceId?: string} | null)?.mediaResourceId ??
+                findMediaResourceId(currentTask, 'consult'));
+          const pids = consultId ? media?.[consultId]?.participants : undefined;
+          const parts = interaction?.participants;
+          if (pids?.length && parts) {
+            for (const pid of pids) {
+              const p = parts[pid];
+              if (!p || p.id === myAgentId) continue;
+              const epId = (p as {epId?: string}).epId?.trim();
+              if (epId && (p.pType === 'EP-DN' || (p as {type?: string}).type === 'EpDn')) {
+                destination = {to: epId, destinationType: 'entryPoint' as DestinationType};
+                break;
+              }
+            }
+            if (!destination?.to) {
+              for (const pid of pids) {
+                const p = parts[pid];
+                if (p?.id !== myAgentId && p.pType === 'Agent') {
+                  destination = {to: pid, destinationType: 'agent' as DestinationType};
+                  break;
+                }
+              }
+            }
+            if (!destination?.to) {
+              const cid = (
+                interaction as {callProcessingDetails?: {consultedAgentId?: string}}
+              ).callProcessingDetails?.consultedAgentId?.trim();
+              if (cid && cid !== myAgentId) {
+                destination = {to: cid, destinationType: 'agent' as DestinationType};
+              }
+            }
           }
         }
 
